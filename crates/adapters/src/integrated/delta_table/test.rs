@@ -735,7 +735,7 @@ async fn wait_for_output_records<T>(
     let log_store = table.log_store();
     datafusion
         .runtime_env()
-        .register_object_store(log_store.root_url(), log_store.root_object_store(None));
+        .register_object_store(log_store.root_url(), log_store.root_object_store());
     loop {
         // select count() output_table == len().
         Arc::get_mut(table)
@@ -3448,7 +3448,7 @@ async fn parse_cdc_order_by_defaults() {
 /// silently changing user-visible behavior, and gives us a concrete
 /// reference for the caveat documented at the call site.
 #[test]
-fn except_all_unsupported_types_are_only_map() {
+fn except_all_supports_every_delta_mappable_type() {
     use arrow::datatypes::{DataType, Field, TimeUnit};
     use arrow::row::{RowConverter, SortField};
     use std::sync::Arc;
@@ -3527,7 +3527,8 @@ fn except_all_unsupported_types_are_only_map() {
         assert!(supports(dt.clone()), "{dt:?} must be supported");
     }
 
-    // `Map` is the one Delta-mappable type that is genuinely unsupported.
+    // `Map` gained support in arrow-row 59; it was the last Delta-mappable
+    // type `RowConverter` rejected.
     let map_type = Field::new_map(
         "map",
         "entries",
@@ -3539,8 +3540,8 @@ fn except_all_unsupported_types_are_only_map() {
     .data_type()
     .clone();
     assert!(
-        !supports(map_type),
-        "Map is expected to be unsupported by RowConverter; if this \
+        supports(map_type),
+        "Map is expected to be supported by RowConverter; if this \
          changes, update the caveat in `build_cdc_dataframe`",
     );
 }
@@ -8911,9 +8912,7 @@ async fn delta_table_snapshot_id_mapped_reordered_nested_fields_test() {
 /// The kernel parses `maxValues` when it opens the table, so one row Spark
 /// wrote with a long year makes the whole table unreadable.
 ///
-/// arrow-json 58 rejects a 7-digit year; 59 accepts it. The arrow bump fixes
-/// this.
-#[ignore = "#5717, #5722: needs arrow-json 59, which the dep bump brings"]
+/// arrow-json 58 rejects a 7-digit year; 59 accepts it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn delta_table_snapshot_out_of_range_date_stats_test() {
     init_logging();
@@ -9152,7 +9151,7 @@ fn delta_table_deletion_vector_scan_without_blocking_pool_test() {
             let ctx = SessionContext::new();
             let log_store = table.log_store();
             ctx.runtime_env()
-                .register_object_store(log_store.root_url(), log_store.root_object_store(None));
+                .register_object_store(log_store.root_url(), log_store.root_object_store());
             ctx.register_table("snapshot", table.table_provider().await.unwrap())
                 .unwrap();
             ctx.sql("select \"id\" from snapshot")
