@@ -7,6 +7,7 @@ pub mod monitor;
 pub mod oidc_trust;
 pub mod pipeline;
 pub mod program;
+pub mod resize;
 pub mod resources_status;
 pub mod role;
 pub mod storage;

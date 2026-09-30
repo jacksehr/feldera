@@ -5230,6 +5230,128 @@
         ]
       }
     },
+    "/v0/pipelines/{pipeline_name}/resize": {
+      "post": {
+        "tags": [
+          "Pipeline Lifecycle"
+        ],
+        "summary": "Resize Pipeline",
+        "description": "Required role: `write` or higher.\n\nChanges the CPU and memory of a running pipeline in its deployment config. The next start\nresets them to the runtime config.",
+        "operationId": "post_pipeline_resize",
+        "parameters": [
+          {
+            "name": "pipeline_name",
+            "in": "path",
+            "description": "Unique pipeline name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "CPU and memory values to change",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PipelineResize"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Pipeline resized; returns the new resources of the deployment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResourceConfig"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Pipeline is not running, or the resize is invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "Invalid resize": {
+                    "value": {
+                      "message": "Invalid resize: cpu_cores_min (9) exceeds cpu_cores_max (8)",
+                      "error_code": "InvalidResize",
+                      "details": {
+                        "reason": "cpu_cores_min (9) exceeds cpu_cores_max (8)"
+                      }
+                    }
+                  },
+                  "Not running": {
+                    "value": {
+                      "message": "Pipeline can only be resized while it is running.",
+                      "error_code": "ResizeRestrictedToRunning",
+                      "details": null
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Pipeline with that name does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "message": "Unknown pipeline name 'non-existent-pipeline'",
+                  "error_code": "UnknownPipelineName",
+                  "details": {
+                    "pipeline_name": "non-existent-pipeline"
+                  }
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "The runner of this installation cannot resize pipelines",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "message": "Unsupported pipeline action 'suspend': this pipeline does not support the suspend action for the following reason(s):\n    - Storage must be configured",
+                  "error_code": "UnsupportedPipelineAction",
+                  "details": {
+                    "action": "suspend",
+                    "reason": "this pipeline does not support the suspend action for the following reason(s):\n    - Storage must be configured"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "JSON web token (JWT) or API key": []
+          }
+        ]
+      }
+    },
     "/v0/pipelines/{pipeline_name}/resume": {
       "post": {
         "tags": [
@@ -13568,6 +13690,35 @@
             "nullable": true
           }
         }
+      },
+      "PipelineResize": {
+        "type": "object",
+        "description": "New CPU and memory values for a running pipeline. Fields left out keep their value.",
+        "properties": {
+          "cpu_cores_max": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "cpu_cores_min": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "memory_mb_max": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "minimum": 0
+          },
+          "memory_mb_min": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true,
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
       },
       "PipelineSelectedInfo": {
         "allOf": [

@@ -418,6 +418,16 @@ pub(crate) fn error_update_restricted_to_stopped() -> ErrorResponse {
     ErrorResponse::from_error_nolog(&DBError::UpdateRestrictedToStopped)
 }
 
+pub(crate) fn error_resize_restricted_to_running() -> ErrorResponse {
+    ErrorResponse::from_error_nolog(&DBError::ResizeRestrictedToRunning)
+}
+
+pub(crate) fn error_invalid_resize() -> ErrorResponse {
+    ErrorResponse::from_error_nolog(&DBError::InvalidResize {
+        reason: "cpu_cores_min (9) exceeds cpu_cores_max (8)".to_string(),
+    })
+}
+
 pub(crate) fn error_delete_restricted_to_fully_stopped() -> ErrorResponse {
     ErrorResponse::from_error_nolog(&DBError::DeleteRestrictedToFullyStopped)
 }

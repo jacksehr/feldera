@@ -23,6 +23,7 @@ use crate::db::types::program::{
     ProgramStatus, RuntimeSelector, RustCompilationInfo, SqlCompilationInfo,
     generate_pipeline_config, validate_program_status_transition,
 };
+use crate::db::types::resize::{PipelineResize, resize_deployment_config};
 use crate::db::types::resources_status::{
     ResourcesDesiredStatus, ResourcesStatus, validate_resources_desired_status_transition,
     validate_resources_status_transition,
@@ -3439,7 +3440,200 @@ async fn pipeline_transition_after_quick_stop() {
     );
 }
 
-/// Deployment of a pipeline by starting it and progressing through various deployment statuses.
+/// Resize of a running pipeline.
+#[tokio::test]
+async fn pipeline_resize() {
+    let handle = test_setup().await;
+    let tenant_id = TenantRecord::default().id;
+    let pipeline = handle
+        .db
+        .new_pipeline(
+            tenant_id,
+            Uuid::now_v7(),
+            "v0",
+            PipelineDescr {
+                name: "resized".to_string(),
+                description: "".to_string(),
+                tags: vec![],
+                runtime_config: json!({
+                    "workers": 4,
+                    "resources": {"cpu_cores_min": 2, "cpu_cores_max": 3, "memory_mb_min": 4000, "memory_mb_max": 4000}
+                }),
+                program_code: "".to_string(),
+                udf_rust: "".to_string(),
+                udf_toml: "".to_string(),
+                program_config: json!({}),
+            },
+        )
+        .await
+        .unwrap();
+    let resize = PipelineResize {
+        cpu_cores_min: Some(1.0),
+        memory_mb_min: Some(3000),
+        ..Default::default()
+    };
+
+    // Stopped
+    assert!(matches!(
+        handle
+            .db
+            .resize_pipeline(tenant_id, "resized", &resize)
+            .await
+            .unwrap_err(),
+        DBError::ResizeRestrictedToRunning
+    ));
+
+    // Compile
+    handle
+        .db
+        .transit_program_status_to_compiling_sql(tenant_id, pipeline.id, Version(1))
+        .await
+        .unwrap();
+    handle
+        .db
+        .transit_program_status_to_sql_compiled(
+            tenant_id,
+            pipeline.id,
+            Version(1),
+            &SqlCompilationInfo {
+                exit_code: 0,
+                messages: vec![],
+            },
+            &serde_json::to_value(ProgramInfo {
+                schema: serde_json::to_value(ProgramSchema {
+                    inputs: vec![],
+                    outputs: vec![],
+                })
+                .unwrap(),
+                main_rust: "".to_string(),
+                udf_stubs: "".to_string(),
+                input_connectors: BTreeMap::new(),
+                output_connectors: BTreeMap::new(),
+                circuit_ir: None,
+                dataflow: None,
+            })
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    handle
+        .db
+        .transit_program_status_to_compiling_rust(tenant_id, pipeline.id, Version(1))
+        .await
+        .unwrap();
+    handle
+        .db
+        .transit_program_status_to_success(
+            tenant_id,
+            pipeline.id,
+            Version(1),
+            &RustCompilationInfo {
+                exit_code: 0,
+                stdout: "".to_string(),
+                stderr: "".to_string(),
+            },
+            "def",
+            "123",
+            "456",
+        )
+        .await
+        .unwrap();
+    async fn start(db: &StoragePostgres, tenant_id: TenantId, version: Version) {
+        let pipeline = db.get_pipeline(tenant_id, "resized").await.unwrap();
+        db.set_deployment_resources_desired_status_provisioned(
+            tenant_id,
+            "resized",
+            RuntimeDesiredStatus::Paused,
+            BootstrapConfig::default(),
+            false,
+        )
+        .await
+        .unwrap();
+        db.transit_deployment_resources_status_to_provisioning(
+            tenant_id,
+            pipeline.id,
+            version,
+            Uuid::nil(),
+            serde_json::to_value(generate_pipeline_config(
+                pipeline.id,
+                &pipeline.name,
+                &serde_json::from_value(pipeline.runtime_config.clone()).unwrap(),
+            ))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        db.transit_deployment_resources_status_to_provisioned(
+            tenant_id,
+            pipeline.id,
+            version,
+            "location",
+            json!({}),
+            RuntimeStatus::Initializing,
+            json!(""),
+            RuntimeDesiredStatus::Paused,
+        )
+        .await
+        .unwrap();
+    }
+    async fn stop(db: &StoragePostgres, tenant_id: TenantId, version: Version) {
+        let pipeline = db.get_pipeline(tenant_id, "resized").await.unwrap();
+        db.set_deployment_resources_desired_status_stopped(tenant_id, "resized")
+            .await
+            .unwrap();
+        db.transit_deployment_resources_status_to_stopping(
+            tenant_id,
+            pipeline.id,
+            version,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        db.transit_deployment_resources_status_to_stopped(tenant_id, pipeline.id, version)
+            .await
+            .unwrap();
+    }
+
+    // Running: the resize writes the deployment configuration only
+    start(&handle.db, tenant_id, Version(1)).await;
+    let before = handle.db.get_pipeline(tenant_id, "resized").await.unwrap();
+    let resized = handle
+        .db
+        .resize_pipeline(tenant_id, "resized", &resize)
+        .await
+        .unwrap();
+    let after = handle.db.get_pipeline(tenant_id, "resized").await.unwrap();
+    assert_eq!(after.deployment_config, Some(resized.clone()));
+    assert_eq!(resized["resources"]["cpu_cores_min"], json!(1.0));
+    assert_eq!(resized["resources"]["memory_mb_min"], json!(3000));
+    assert_eq!(after.runtime_config, before.runtime_config);
+    assert_eq!(after.version, before.version);
+    assert_eq!(after.refresh_version, Version(before.refresh_version.0 + 1));
+
+    // Running: an invalid resize changes nothing
+    let invalid = PipelineResize {
+        cpu_cores_min: Some(9.0),
+        ..Default::default()
+    };
+    assert!(matches!(
+        handle
+            .db
+            .resize_pipeline(tenant_id, "resized", &invalid)
+            .await
+            .unwrap_err(),
+        DBError::InvalidResize { .. }
+    ));
+    let unchanged = handle.db.get_pipeline(tenant_id, "resized").await.unwrap();
+    assert_eq!(unchanged.deployment_config, after.deployment_config);
+    assert_eq!(unchanged.refresh_version, after.refresh_version);
+
+    // Stopped: the resized deployment configuration is kept
+    stop(&handle.db, tenant_id, Version(1)).await;
+    let stopped = handle.db.get_pipeline(tenant_id, "resized").await.unwrap();
+    assert_eq!(stopped.deployment_config, Some(resized));
+}
+
 #[tokio::test]
 async fn pipeline_deployment() {
     let handle = test_setup().await;
@@ -8077,6 +8271,36 @@ impl Storage for Mutex<DbModel> {
             .pipelines
             .insert((tenant_id, pipeline.id), pipeline.clone());
         Ok(())
+    }
+
+    async fn resize_pipeline(
+        &self,
+        tenant_id: TenantId,
+        pipeline_name: &str,
+        resize: &PipelineResize,
+    ) -> Result<serde_json::Value, DBError> {
+        let mut pipeline = self.get_pipeline(tenant_id, pipeline_name).await?;
+        let deployment_config = match (
+            pipeline.deployment_resources_status,
+            pipeline.deployment_resources_desired_status,
+            &pipeline.deployment_config,
+        ) {
+            (
+                ResourcesStatus::Provisioned,
+                ResourcesDesiredStatus::Provisioned,
+                Some(deployment_config),
+            ) => deployment_config,
+            _ => return Err(DBError::ResizeRestrictedToRunning),
+        };
+        let resized = resize_deployment_config(deployment_config, resize)
+            .map_err(|reason| DBError::InvalidResize { reason })?;
+        pipeline.deployment_config = Some(resized.clone());
+        pipeline.refresh_version = Version(pipeline.refresh_version.0 + 1);
+        self.lock()
+            .await
+            .pipelines
+            .insert((tenant_id, pipeline.id), pipeline);
+        Ok(resized)
     }
 
     async fn delete_pipeline(

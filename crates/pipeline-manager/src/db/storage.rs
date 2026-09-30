@@ -14,6 +14,7 @@ use crate::db::types::pipeline::{
 use crate::db::types::program::{
     PipelineProgramArtifacts, RustCompilationInfo, SqlCompilationInfo,
 };
+use crate::db::types::resize::PipelineResize;
 use crate::db::types::role::{MintableKeyRole, Role};
 use crate::db::types::tenant::TenantId;
 use crate::db::types::user::{
@@ -409,6 +410,14 @@ pub(crate) trait Storage {
         pipeline_name: &str,
         platform_version: &str,
     ) -> Result<(), DBError>;
+
+    /// Sets the CPU and memory in the deployment config of a running pipeline.
+    async fn resize_pipeline(
+        &self,
+        tenant_id: TenantId,
+        pipeline_name: &str,
+        resize: &PipelineResize,
+    ) -> Result<serde_json::Value, DBError>;
 
     /// Updates an existing pipeline.
     ///

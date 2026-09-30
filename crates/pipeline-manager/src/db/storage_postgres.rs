@@ -22,6 +22,7 @@ use crate::db::types::program::{
     PipelineProgramArtifacts, ProgramConfig, ProgramInfo, ProgramStatus, RustCompilationInfo,
     SqlCompilationInfo,
 };
+use crate::db::types::resize::{PipelineResize, resize_deployment_config};
 use crate::db::types::resources_status::{ResourcesDesiredStatus, ResourcesStatus};
 use crate::db::types::role::{MintableKeyRole, Role};
 use crate::db::types::storage::StorageStatus;
@@ -768,6 +769,47 @@ impl Storage for StoragePostgres {
         txn.commit().await?;
 
         Ok(())
+    }
+
+    async fn resize_pipeline(
+        &self,
+        tenant_id: TenantId,
+        pipeline_name: &str,
+        resize: &PipelineResize,
+    ) -> Result<serde_json::Value, DBError> {
+        let mut client = self.pool.get().await?;
+        let txn = transaction::begin(&mut client).await?;
+        let current =
+            operations::pipeline::get_pipeline(&txn, tenant_id, pipeline_name, true).await?;
+        let deployment_config = match (
+            current.deployment_resources_status,
+            current.deployment_resources_desired_status,
+            &current.deployment_config,
+        ) {
+            (
+                ResourcesStatus::Provisioned,
+                ResourcesDesiredStatus::Provisioned,
+                Some(deployment_config),
+            ) => deployment_config,
+            _ => return Err(DBError::ResizeRestrictedToRunning),
+        };
+        let resized = resize_deployment_config(deployment_config, resize)
+            .map_err(|reason| DBError::InvalidResize { reason })?;
+
+        let stmt = txn
+            .prepare_cached(
+                "UPDATE pipeline
+                     SET deployment_config = $1,
+                         refresh_version = refresh_version + 1
+                     WHERE tenant_id = $2 AND id = $3",
+            )
+            .await?;
+        let rows_affected = txn
+            .execute(&stmt, &[&resized.to_string(), &tenant_id.0, &current.id.0])
+            .await?;
+        assert_eq!(rows_affected, 1);
+        txn.commit().await?;
+        Ok(resized)
     }
 
     #[allow(clippy::too_many_arguments)]

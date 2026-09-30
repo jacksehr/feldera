@@ -213,6 +213,10 @@ pub enum DBError {
         pipeline_name: String,
     },
     UpdateRestrictedToStopped,
+    ResizeRestrictedToRunning,
+    InvalidResize {
+        reason: String,
+    },
     ProgramStatusUpdateRestrictedToStopped,
     DeleteRestrictedToFullyStopped,
     DeleteRestrictedToClearedStorage,
@@ -813,6 +817,12 @@ impl Display for DBError {
                     "Pipeline can only be updated while stopped. Stop it first by invoking '/stop'."
                 )
             }
+            DBError::ResizeRestrictedToRunning => {
+                write!(f, "Pipeline can only be resized while it is running.")
+            }
+            DBError::InvalidResize { reason } => {
+                write!(f, "Invalid resize: {reason}")
+            }
             DBError::ProgramStatusUpdateRestrictedToStopped => {
                 write!(f, "Program status can only be updated while stopped.")
             }
@@ -1141,6 +1151,8 @@ impl DetailedError for DBError {
             Self::UnknownPipeline { .. } => Cow::from("UnknownPipeline"),
             Self::UnknownPipelineName { .. } => Cow::from("UnknownPipelineName"),
             Self::UpdateRestrictedToStopped { .. } => Cow::from("UpdateRestrictedToStopped"),
+            Self::ResizeRestrictedToRunning => Cow::from("ResizeRestrictedToRunning"),
+            Self::InvalidResize { .. } => Cow::from("InvalidResize"),
             Self::ProgramStatusUpdateRestrictedToStopped { .. } => {
                 Cow::from("ProgramStatusUpdateRestrictedToStopped")
             }
@@ -1273,6 +1285,8 @@ impl ResponseError for DBError {
             Self::UnknownPipeline { .. } => StatusCode::NOT_FOUND,
             Self::UnknownPipelineName { .. } => StatusCode::NOT_FOUND,
             Self::UpdateRestrictedToStopped { .. } => StatusCode::BAD_REQUEST,
+            Self::ResizeRestrictedToRunning => StatusCode::BAD_REQUEST,
+            Self::InvalidResize { .. } => StatusCode::BAD_REQUEST,
             Self::ProgramStatusUpdateRestrictedToStopped { .. } => StatusCode::BAD_REQUEST,
             Self::DeleteRestrictedToFullyStopped { .. } => StatusCode::BAD_REQUEST,
             Self::CannotRenameNonExistingPipeline { .. } => StatusCode::BAD_REQUEST,

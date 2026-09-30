@@ -76,6 +76,7 @@ static ROUTE_MIN_ROLE: &[(&str, &str, Role)] = &[
     ("POST", "/v0/pipelines/{pipeline_name}/pause", Role::Write), // post_pipeline_pause
     ("GET", "/v0/pipelines/{pipeline_name}/query", Role::Write), // pipeline_adhoc_sql
     ("POST", "/v0/pipelines/{pipeline_name}/rebalance", Role::Write), // post_pipeline_rebalance
+    ("POST", "/v0/pipelines/{pipeline_name}/resize", Role::Write), // post_pipeline_resize
     ("POST", "/v0/pipelines/{pipeline_name}/resume", Role::Write), // post_pipeline_resume
     ("GET", "/v0/pipelines/{pipeline_name}/samply_profile", Role::Read), // get_pipeline_samply_profile
     ("POST", "/v0/pipelines/{pipeline_name}/samply_profile", Role::Read), // start_samply_profile

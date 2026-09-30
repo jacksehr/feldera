@@ -15,6 +15,7 @@ use crate::db::types::pipeline::{
 use crate::db::types::program::{
     ProgramConfig, ProgramError, ProgramInfo, ProgramStatus, RuntimeSelector,
 };
+use crate::db::types::resize::PipelineResize;
 use crate::db::types::resources_status::{ResourcesDesiredStatus, ResourcesStatus};
 use crate::db::types::storage::StorageStatus;
 use crate::db::types::tenant::TenantId;
@@ -32,7 +33,9 @@ use actix_web::{
 };
 use chrono::{DateTime, Utc};
 use feldera_types::adapter_stats::PipelineStatsErrorsResponse;
-use feldera_types::config::{InputEndpointConfig, OutputEndpointConfig, RuntimeConfig};
+use feldera_types::config::{
+    InputEndpointConfig, OutputEndpointConfig, ResourceConfig, RuntimeConfig,
+};
 use feldera_types::error::ErrorResponse;
 use feldera_types::pipeline_diff::{PipelineDiff, compute_pipeline_diff};
 use feldera_types::program_schema::ProgramSchema;
@@ -2224,6 +2227,77 @@ pub(crate) async fn post_pipeline_testing(
     Ok(HttpResponse::Ok().finish())
 }
 
+/// Resize Pipeline
+///
+/// Changes the CPU and memory of a running pipeline in its deployment config. The next start
+/// resets them to the runtime config.
+#[utoipa::path(
+    context_path = "/v0",
+    security(("JSON web token (JWT) or API key" = [])),
+    params(
+        ("pipeline_name" = String, Path, description = "Unique pipeline name")
+    ),
+    request_body(
+        content = PipelineResize,
+        description = "CPU and memory values to change",
+    ),
+    responses(
+        (status = OK
+            , description = "Pipeline resized; returns the new resources of the deployment"
+            , body = ResourceConfig),
+        (status = NOT_FOUND
+            , description = "Pipeline with that name does not exist"
+            , body = ErrorResponse
+            , example = json!(examples::error_unknown_pipeline_name())),
+        (status = BAD_REQUEST
+            , description = "Pipeline is not running, or the resize is invalid"
+            , body = ErrorResponse
+            , examples(
+                ("Not running" = (value = json!(examples::error_resize_restricted_to_running()))),
+                ("Invalid resize" = (value = json!(examples::error_invalid_resize()))),
+            )
+        ),
+        (status = METHOD_NOT_ALLOWED
+            , description = "The runner of this installation cannot resize pipelines"
+            , body = ErrorResponse
+            , example = json!(examples::error_unsupported_pipeline_action())),
+        (status = INTERNAL_SERVER_ERROR, body = ErrorResponse),
+    ),
+    tag = "Pipeline Lifecycle"
+)]
+#[post("/pipelines/{pipeline_name}/resize")]
+pub(crate) async fn post_pipeline_resize(
+    state: WebData<ServerState>,
+    tenant_id: ReqData<TenantId>,
+    path: web::Path<String>,
+    body: web::Json<PipelineResize>,
+) -> Result<HttpResponse, ManagerError> {
+    if !state.config.enable_pipeline_resize {
+        Err(ApiError::UnsupportedPipelineAction {
+            action: "/resize".to_string(),
+            reason: "the runner of this installation cannot resize pipelines".to_string(),
+        })?;
+    }
+    let pipeline_name = path.into_inner();
+    let deployment_config = state
+        .db
+        .lock()
+        .await
+        .resize_pipeline(*tenant_id, &pipeline_name, &body)
+        .await?;
+    info!(
+        pipeline = %pipeline_name,
+        tenant = %tenant_id.0,
+        "Pipeline resized to {:?}",
+        body.into_inner()
+    );
+    let resources = deployment_config
+        .get("resources")
+        .and_then(|resources| ResourceConfig::deserialize(resources).ok())
+        .unwrap_or_default();
+    Ok(HttpResponse::Ok().json(resources))
+}
+
 #[cfg(test)]
 mod tests {
     use crate::api::endpoints::pipeline_management::{
@@ -2231,6 +2305,44 @@ mod tests {
     };
     use feldera_types::runtime_status::{ConnectorStats, RuntimeStatusDetails};
     use serde_json::json;
+
+    /// `/resize` is refused unless the runner can resize.
+    #[actix_web::test]
+    async fn resize_requires_enable_pipeline_resize() {
+        use crate::api::main::ServerState;
+        use crate::db::test::setup_pg;
+        use crate::db::types::tenant::TenantId;
+        use actix_web::{App, HttpMessage, test, web};
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+        use uuid::Uuid;
+
+        crate::ensure_default_crypto_provider();
+        let (db, _temp) = setup_pg().await;
+        let db = Arc::new(Mutex::new(db));
+        for (enabled, expected_status, expected_code) in [
+            (false, 405, "UnsupportedPipelineAction"),
+            (true, 404, "UnknownPipelineName"),
+        ] {
+            let mut state = ServerState::test_state(db.clone()).await;
+            state.config.enable_pipeline_resize = enabled;
+            let app = test::init_service(
+                App::new()
+                    .app_data(web::Data::new(state))
+                    .service(super::post_pipeline_resize),
+            )
+            .await;
+            let req = test::TestRequest::post()
+                .uri("/pipelines/missing/resize")
+                .set_json(json!({"cpu_cores_min": 1.0}))
+                .to_request();
+            req.extensions_mut().insert(TenantId(Uuid::nil()));
+            let resp = test::call_service(&app, req).await;
+            assert_eq!(resp.status(), expected_status, "enabled: {enabled}");
+            let body: serde_json::Value = test::read_body_json(resp).await;
+            assert_eq!(body["error_code"], expected_code, "enabled: {enabled}");
+        }
+    }
 
     /// The API never returns the large program info fields. The circuit IR in
     /// particular reaches the pipeline through the program info artifact, so

@@ -821,6 +821,62 @@ def test_runtime_config_edit_restricted(pipeline_name):
 
 
 @gen_pipeline_name
+def test_resize(pipeline_name):
+    pipeline = PipelineBuilder(TEST_CLIENT, pipeline_name, "").create_or_replace()
+    runtime_config = TEST_CLIENT.http.get(f"/pipelines/{pipeline_name}?selector=all")[
+        "runtime_config"
+    ]
+    runtime_config["resources"].update(
+        {
+            "cpu_cores_min": 0.5,
+            "cpu_cores_max": 1,
+            "memory_mb_min": 1000,
+            "memory_mb_max": 1000,
+        }
+    )
+    TEST_CLIENT.patch_pipeline(name=pipeline_name, runtime_config=runtime_config)
+
+    def resize(body):
+        return post_json(api_url(f"/pipelines/{pipeline_name}/resize"), body)
+
+    def assert_error(response, error_code):
+        assert response.status_code == HTTPStatus.BAD_REQUEST, response.text
+        assert response.json()["error_code"] == error_code, response.text
+
+    def current_cpu_cores_min():
+        # Setting a value to what it already is returns the deployment's resources.
+        response = resize({"memory_mb_max": 1000})
+        assert response.status_code == HTTPStatus.OK, response.text
+        return response.json()["cpu_cores_min"]
+
+    response = resize({"cpu_cores_min": 0.25})
+    if response.status_code == HTTPStatus.METHOD_NOT_ALLOWED:
+        pytest.skip("the runner cannot resize pipelines")
+    assert_error(response, "ResizeRestrictedToRunning")
+
+    pipeline.start()
+    assert_error(resize({"cpu_cores_min": 2}), "InvalidResize")
+    # Each request equal to its limit would change the QoS class.
+    assert_error(resize({"cpu_cores_max": 0.5}), "InvalidResize")
+    assert resize({"workers": 1}).status_code == HTTPStatus.BAD_REQUEST
+
+    before = TEST_CLIENT.http.get(f"/pipelines/{pipeline_name}?selector=all")
+    response = resize({"cpu_cores_min": 0.25})
+    assert response.status_code == HTTPStatus.OK, response.text
+    assert response.json()["cpu_cores_min"] == 0.25
+    after = TEST_CLIENT.http.get(f"/pipelines/{pipeline_name}?selector=all")
+    assert after["runtime_config"] == before["runtime_config"]
+    assert after["version"] == before["version"]
+    assert after["refresh_version"] == before["refresh_version"] + 1
+
+    # A restart resets the resize.
+    pipeline.stop(force=True)
+    pipeline.start()
+    assert current_cpu_cores_min() == 0.5
+    pipeline.stop(force=True)
+
+
+@gen_pipeline_name
 @enterprise_only
 def test_runtime_config_edit_restricted_enterprise(pipeline_name):
     pipeline = PipelineBuilder(TEST_CLIENT, pipeline_name, "").create_or_replace()
