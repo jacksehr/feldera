@@ -46,6 +46,10 @@ pub enum AdHocResultFormat {
     ///
     /// e.g., a query like `select * from materialized_view` will be rewritten as
     /// `select * from materialized_view order by col1, col2, ..., colN`
+    ///
+    /// The hash identifies a result set within one Feldera release. It is
+    /// built on DataFusion's row hash, so a Feldera upgrade can change it
+    /// for unchanged data; compare hashes taken from the same release.
     Hash,
 }
 
