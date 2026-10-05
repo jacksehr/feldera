@@ -1,41 +1,35 @@
-name: Build docs.feldera.com
-
-on:
-  workflow_call:
-
+name: Build docs.feldera.com (ubuntu 26.04 test)
+'on':
+  workflow_call: null
+  workflow_dispatch: null
 jobs:
   build-docs:
-    runs-on: ubuntu-latest-amd64
+    runs-on: ubuntu-26-amd64
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: actions/setup-node@f1f314fca9dfce2769ece7d933488f076716723e # v1
-        with:
-          node-version: 25
-
-      - name: Install required-version defined in pyproject.toml
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
-        with:
-          pyproject-file: "python/pyproject.toml"
-
-      - name: Build Python SDK docs
-        working-directory: ./python/docs
-        run: |
-          uv run sphinx-apidoc -o . ../feldera
-          uv run sphinx-build -M html . _build
-
-      - name: Copy the Python docs to static
-        run: |
-          cp -r python/docs/_build/html docs.feldera.com/static/python
-
-      - name: Build Docusaurus
-        working-directory: ./docs.feldera.com
-        run: |
-          yarn install --frozen-lockfile
-          yarn build
-
-      - name: Upload docs
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: feldera-docs
-          path: ./docs.feldera.com/build
-          retention-days: 7
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+    - uses: actions/setup-node@f1f314fca9dfce2769ece7d933488f076716723e
+      with:
+        node-version: 25
+    - name: Install required-version defined in pyproject.toml
+      uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86
+      with:
+        pyproject-file: python/pyproject.toml
+    - name: Build Python SDK docs
+      working-directory: ./python/docs
+      run: |
+        uv run sphinx-apidoc -o . ../feldera
+        uv run sphinx-build -M html . _build
+    - name: Copy the Python docs to static
+      run: |
+        cp -r python/docs/_build/html docs.feldera.com/static/python
+    - name: Build Docusaurus
+      working-directory: ./docs.feldera.com
+      run: |
+        yarn install --frozen-lockfile
+        yarn build
+    - name: Upload docs
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: feldera-docs
+        path: ./docs.feldera.com/build
+        retention-days: 7
