@@ -927,13 +927,20 @@ async fn stream_encode_and_write(
     rows_written: &mut u64,
 ) -> Result<(Vec<Add>, usize), WriteError> {
     let num_indexed_cols = min(32, inner.arrow_schema.fields.len() as u64);
+    // delta-rs checks the encoded size only between slices of `write_batch_size`
+    // rows, and its parallel column encoders publish that size one slice late.
+    // At the 8192-row default a slice of our rows is tens of MiB, so the check
+    // reads a stale size and the file never rolls at `TARGET_FILE_SIZE` -- it
+    // grows until the object store rejects the upload past 10000 parts. Slice
+    // finer so a stale reading still lands near the target.
+    const WRITE_BATCH_ROWS: usize = 1024;
     let writer_config = WriterConfig::new(
         inner.arrow_schema.clone(),
         vec![],
         None,
         None,
         Some(TARGET_FILE_SIZE),
-        None,
+        Some(WRITE_BATCH_ROWS),
         DataSkippingNumIndexedCols::NumColumns(num_indexed_cols),
         None,
     );
