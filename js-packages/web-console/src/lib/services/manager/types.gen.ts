@@ -4355,6 +4355,16 @@ export type PipelineMonitorEventSelectedInfo = {
 }
 
 /**
+ * New CPU and memory values for a running pipeline. Fields left out keep their value.
+ */
+export type PipelineResize = {
+  cpu_cores_max?: number | null
+  cpu_cores_min?: number | null
+  memory_mb_max?: number | null
+  memory_mb_min?: number | null
+}
+
+/**
  * Pipeline information which has a selected subset of optional fields.
  * It both includes fields which are user-provided and system-generated.
  * If an optional field is not selected (i.e., is `None`), it will not be serialized.
@@ -8482,6 +8492,49 @@ export type PostPipelineRebalanceResponses = {
    */
   200: unknown
 }
+
+export type PostPipelineResizeData = {
+  /**
+   * CPU and memory values to change
+   */
+  body: PipelineResize
+  path: {
+    /**
+     * Unique pipeline name
+     */
+    pipeline_name: string
+  }
+  query?: never
+  url: '/v0/pipelines/{pipeline_name}/resize'
+}
+
+export type PostPipelineResizeErrors = {
+  /**
+   * Pipeline is not running, or the resize is invalid
+   */
+  400: ErrorResponse
+  /**
+   * Pipeline with that name does not exist
+   */
+  404: ErrorResponse
+  /**
+   * The runner of this installation cannot resize pipelines
+   */
+  405: ErrorResponse
+  500: ErrorResponse
+}
+
+export type PostPipelineResizeError = PostPipelineResizeErrors[keyof PostPipelineResizeErrors]
+
+export type PostPipelineResizeResponses = {
+  /**
+   * Pipeline resized; returns the new resources of the deployment
+   */
+  200: ResourceConfig
+}
+
+export type PostPipelineResizeResponse =
+  PostPipelineResizeResponses[keyof PostPipelineResizeResponses]
 
 export type PostPipelineResumeData = {
   body?: never

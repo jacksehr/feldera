@@ -202,6 +202,9 @@ import type {
   PostPipelineRebalanceData,
   PostPipelineRebalanceErrors,
   PostPipelineRebalanceResponses,
+  PostPipelineResizeData,
+  PostPipelineResizeErrors,
+  PostPipelineResizeResponses,
   PostPipelineResponses,
   PostPipelineResumeData,
   PostPipelineResumeErrors,
@@ -1556,6 +1559,33 @@ export const postPipelineRebalance = <ThrowOnError extends boolean = true>(
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/v0/pipelines/{pipeline_name}/rebalance',
     ...options
+  })
+
+/**
+ * Resize Pipeline
+ *
+ * Required role: `write` or higher.
+ *
+ * Changes the CPU and memory of a running pipeline in its deployment config. The next start
+ * resets them to the runtime config.
+ */
+export const postPipelineResize = <ThrowOnError extends boolean = true>(
+  options: Options<PostPipelineResizeData, ThrowOnError>
+): RequestResult<PostPipelineResizeResponses, PostPipelineResizeErrors, ThrowOnError, 'data'> =>
+  (options.client ?? client).post<
+    PostPipelineResizeResponses,
+    PostPipelineResizeErrors,
+    ThrowOnError,
+    'data'
+  >({
+    responseStyle: 'data',
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/v0/pipelines/{pipeline_name}/resize',
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...options.headers
+    }
   })
 
 /**
