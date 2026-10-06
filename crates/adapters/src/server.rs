@@ -2738,7 +2738,9 @@ struct IngressArgs {
 
 impl IngressArgs {
     /// Names of the query parameters that the `/ingress` handler consumes.
-    const NAMES: &[&str] = &["format", "force"];
+    fn names() -> &'static [&'static str] {
+        field_names::<Self>()
+    }
 }
 
 /// The query string of `request` without the parameters named in
@@ -2751,6 +2753,72 @@ fn format_query(request: &HttpRequest, handler_args: &[&str]) -> String {
         }
     }
     format_args.finish()
+}
+
+/// The field names that the `Deserialize` implementation of the struct `T`
+/// accepts, which are the query parameters that a handler taking
+/// `web::Query<T>` consumes.
+///
+/// `#[derive(Deserialize)]` writes the field names into the generated
+/// implementation as the `fields` argument of `Deserializer::deserialize_struct`.
+/// For example, for `IngressArgs` the derive generates
+///
+/// ```ignore
+/// const FIELDS: &'static [&'static str] = &["format", "force"];
+/// _serde::Deserializer::deserialize_struct(deserializer, "IngressArgs", FIELDS, visitor)
+/// ```
+fn field_names<T: for<'de> Deserialize<'de>>() -> &'static [&'static str] {
+    use serde::de::{Error, Visitor};
+    use std::fmt::{Display, Formatter};
+
+    /// A deserializer that fails as soon as it learns the field names of the
+    /// struct it is asked for, and reports them as its error.
+    struct FieldNamesDeserializer;
+
+    #[derive(Debug)]
+    struct Fields(&'static [&'static str]);
+
+    impl Display for Fields {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{:?}", self.0)
+        }
+    }
+
+    impl std::error::Error for Fields {}
+
+    impl Error for Fields {
+        fn custom<M: Display>(_: M) -> Self {
+            Fields(&[])
+        }
+    }
+
+    impl<'de> serde::Deserializer<'de> for FieldNamesDeserializer {
+        type Error = Fields;
+
+        fn deserialize_struct<V: Visitor<'de>>(
+            self,
+            _name: &'static str,
+            fields: &'static [&'static str],
+            _visitor: V,
+        ) -> Result<V::Value, Fields> {
+            Err(Fields(fields))
+        }
+
+        fn deserialize_any<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Fields> {
+            Err(Fields(&[]))
+        }
+
+        serde::forward_to_deserialize_any! {
+            bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+            bytes byte_buf option unit unit_struct newtype_struct seq tuple
+            tuple_struct map enum identifier ignored_any
+        }
+    }
+
+    match T::deserialize(FieldNamesDeserializer) {
+        Err(Fields(fields)) => fields,
+        Ok(_) => unreachable!("a struct does not deserialize from the field-name deserializer"),
+    }
 }
 
 /// Lookup or create an HTTP input endpoint.
@@ -2868,8 +2936,8 @@ pub fn parser_config_from_http_request(
     let format = get_input_format(format_name)
         .ok_or_else(|| ControllerError::unknown_input_format(endpoint_name, format_name))?;
 
-    let config =
-        format.config_from_http_query(endpoint_name, &format_query(request, IngressArgs::NAMES))?;
+    let config = format
+        .config_from_http_query(endpoint_name, &format_query(request, IngressArgs::names()))?;
 
     // Convert config to YAML format.
     // FIXME: this is hacky. Perhaps we can parameterize `FormatConfig` with the
@@ -2896,8 +2964,8 @@ pub fn encoder_config_from_http_request(
         HttpOutputFormat::Json => Box::new(JsonOutputFormat),
     };
 
-    let config =
-        format.config_from_http_query(endpoint_name, &format_query(request, EgressArgs::NAMES))?;
+    let config = format
+        .config_from_http_query(endpoint_name, &format_query(request, EgressArgs::names()))?;
 
     Ok(FormatConfig {
         name: format.name(),
@@ -2932,7 +3000,9 @@ struct EgressArgs {
 
 impl EgressArgs {
     /// Names of the query parameters that the `/egress` handler consumes.
-    const NAMES: &[&str] = &["backpressure", "format", "send_snapshot"];
+    fn names() -> &'static [&'static str] {
+        field_names::<Self>()
+    }
 }
 
 #[post("/egress/{table_name}")]
@@ -4760,7 +4830,7 @@ mod test_http {
         )
         .to_http_request();
         assert_eq!(
-            format_query(&request, IngressArgs::NAMES),
+            format_query(&request, IngressArgs::names()),
             "update_format=raw&skip_schema_id=true"
         );
         parser_config_from_http_request("t", "avro", &request).unwrap();
@@ -4769,6 +4839,34 @@ mod test_http {
             TestRequest::with_uri("/ingress/t?format=avro&update_formt=raw").to_http_request();
         let error = parser_config_from_http_request("t", "avro", &request).unwrap_err();
         assert!(error.to_string().contains("update_formt"), "{error}");
+
+        // Percent-encoded values and repeated parameters reach the format
+        // unchanged.
+        let request =
+            TestRequest::with_uri("/ingress/t?schema=%7B%22a%22%3A1%7D&force=true&x=1&x=2")
+                .to_http_request();
+        let pairs: Vec<(String, String)> =
+            form_urlencoded::parse(format_query(&request, IngressArgs::names()).as_bytes())
+                .into_owned()
+                .collect();
+        assert_eq!(
+            pairs,
+            [("schema", "{\"a\":1}"), ("x", "1"), ("x", "2")]
+                .map(|(name, value)| (name.to_string(), value.to_string()))
+        );
+    }
+
+    /// The handler parameter names come from the `IngressArgs` and
+    /// `EgressArgs` structs themselves.
+    #[test]
+    fn test_handler_arg_names() {
+        use super::{EgressArgs, IngressArgs};
+
+        assert_eq!(IngressArgs::names(), ["format", "force"]);
+        assert_eq!(
+            EgressArgs::names(),
+            ["backpressure", "format", "send_snapshot"]
+        );
     }
 
     /// Avro over `/ingress`: the schema travels in the query string, and each
@@ -4800,23 +4898,29 @@ outputs:
         .await;
         start_pipeline(&server).await;
 
-        for record in data.iter().flatten() {
-            let value = AvroValue::Record(vec![
-                ("id".to_string(), AvroValue::Long(record.id as i64)),
-                ("b".to_string(), AvroValue::Boolean(record.b)),
-                (
-                    "i".to_string(),
-                    match record.i {
-                        None => AvroValue::Union(0, Box::new(AvroValue::Null)),
-                        Some(i) => AvroValue::Union(1, Box::new(AvroValue::Long(i))),
-                    },
-                ),
-                ("s".to_string(), AvroValue::String(record.s.clone())),
-            ]);
-            let datum = to_avro_datum(&schema, value).unwrap();
+        let datums: Vec<Vec<u8>> = data
+            .iter()
+            .flatten()
+            .map(|record| {
+                let value = AvroValue::Record(vec![
+                    ("id".to_string(), AvroValue::Long(record.id as i64)),
+                    ("b".to_string(), AvroValue::Boolean(record.b)),
+                    (
+                        "i".to_string(),
+                        match record.i {
+                            None => AvroValue::Union(0, Box::new(AvroValue::Null)),
+                            Some(i) => AvroValue::Union(1, Box::new(AvroValue::Long(i))),
+                        },
+                    ),
+                    ("s".to_string(), AvroValue::String(record.s.clone())),
+                ]);
+                to_avro_datum(&schema, value).unwrap()
+            })
+            .collect();
+        for datum in &datums {
             let mut response = server
                 .post(format!("/ingress/test_input1?{query}"))
-                .send_body(datum)
+                .send_body(datum.clone())
                 .await
                 .unwrap();
             let status = response.status();
@@ -4825,6 +4929,19 @@ outputs:
             let CompletionTokenResponse { token } = serde_json::from_slice(&body).unwrap();
             wait_for_completion(&server, &token).await;
         }
+
+        // A body that holds two datums is rejected instead of silently
+        // dropping the second datum.
+        let two_datums = [datums[0].as_slice(), datums[1].as_slice()].concat();
+        let mut response = server
+            .post(format!("/ingress/test_input1?{query}"))
+            .send_body(two_datums)
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = String::from_utf8_lossy(&response.body().await.unwrap()).into_owned();
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(body.contains("trailing bytes"), "{body}");
 
         let mut response = server
             .post("/egress/test_output1?format=csv&backpressure=true&send_snapshot=true")

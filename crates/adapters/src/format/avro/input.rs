@@ -392,6 +392,17 @@ impl AvroParser {
         let avro_value = from_avro_datum(schema, &mut record, None).map_err(|e| {
             ParseError::bin_envelope_error(format!("error parsing avro record: {e}"), record, None)
         })?;
+        // `from_avro_datum` leaves the bytes after the datum in `record`.
+        if !record.is_empty() {
+            return Err(ParseError::bin_envelope_error(
+                format!(
+                    "{} trailing bytes after the Avro datum; a message holds exactly one datum",
+                    record.len()
+                ),
+                data,
+                None,
+            ));
+        }
 
         match self.config.update_format {
             AvroUpdateFormat::Raw => self
