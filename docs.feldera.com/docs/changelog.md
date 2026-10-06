@@ -30,6 +30,13 @@ Source edition can be found on github.
   identifies a result set within one Feldera release: compare hashes taken
   from the same release.
 
+- Incompatible change (Delta Lake output connector): the connector no longer
+  sets `AWS_S3_ALLOW_UNSAFE_RENAME` on S3.  A commit now uses a conditional
+  put, so one writer cannot overwrite another writer's commit.  An
+  S3-compatible store that does not implement conditional put rejects such a
+  commit; for those stores, set `AWS_S3_ALLOW_UNSAFE_RENAME` to `true` in the
+  connector's [storage parameters](/connectors/sinks/delta#storage-parameters).
+
 ## v0.360.0
 
 - Storage now uses LZ4 compression by default, instead of Snappy.  LZ4

@@ -94,6 +94,13 @@ backend-specific documentation for details:
 * [Azure Blob Storage options](https://docs.rs/object_store/latest/object_store/azure/enum.AzureConfigKey.html)
 * [Google Cloud Storage options](https://docs.rs/object_store/latest/object_store/gcp/enum.GoogleConfigKey.html)
 
+On S3 the connector commits with a conditional put, so two writers can never
+overwrite each other's commit. A few S3-compatible stores do not implement
+conditional put; on those, commits fail until you set
+`AWS_S3_ALLOW_UNSAFE_RENAME` to `true` in the storage parameters. That setting
+makes a commit an overwriting rename, which is safe only when a single writer
+writes the table.
+
 ### Views with unique keys
 
 If the SQL view contains a **unique key**—a set of columns that uniquely identify each record—the Delta Lake connector can optimize updates by combining a delete and insert with the same key into a single **atomic update**. In such cases, the connector emits a record with the `__feldera_op` field set to `'u'` (for **update**).
