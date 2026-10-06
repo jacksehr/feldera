@@ -2736,6 +2736,23 @@ struct IngressArgs {
     force: bool,
 }
 
+impl IngressArgs {
+    /// Names of the query parameters that the `/ingress` handler consumes.
+    const NAMES: &[&str] = &["format", "force"];
+}
+
+/// The query string of `request` without the parameters named in
+/// `handler_args`.  The remaining parameters configure the data format.
+fn format_query(request: &HttpRequest, handler_args: &[&str]) -> String {
+    let mut format_args = form_urlencoded::Serializer::new(String::new());
+    for (name, value) in form_urlencoded::parse(request.query_string().as_bytes()) {
+        if !handler_args.contains(&name.as_ref()) {
+            format_args.append_pair(&name, &value);
+        }
+    }
+    format_args.finish()
+}
+
 /// Lookup or create an HTTP input endpoint.
 async fn get_or_create_http_input_endpoint(
     state: &WebData<ServerState>,
@@ -2851,7 +2868,8 @@ pub fn parser_config_from_http_request(
     let format = get_input_format(format_name)
         .ok_or_else(|| ControllerError::unknown_input_format(endpoint_name, format_name))?;
 
-    let config = format.config_from_http_request(endpoint_name, request)?;
+    let config =
+        format.config_from_http_query(endpoint_name, &format_query(request, IngressArgs::NAMES))?;
 
     // Convert config to YAML format.
     // FIXME: this is hacky. Perhaps we can parameterize `FormatConfig` with the
@@ -2865,7 +2883,7 @@ pub fn parser_config_from_http_request(
 }
 
 /// Create an instance of `FormatConfig` from format name and
-/// HTTP request using the `InputFormat::config_from_http_request` method.
+/// HTTP request using the `OutputFormat::config_from_http_query` method.
 pub fn encoder_config_from_http_request(
     endpoint_name: &str,
     format: HttpOutputFormat,
@@ -2878,7 +2896,8 @@ pub fn encoder_config_from_http_request(
         HttpOutputFormat::Json => Box::new(JsonOutputFormat),
     };
 
-    let config = format.config_from_http_request(endpoint_name, request)?;
+    let config =
+        format.config_from_http_query(endpoint_name, &format_query(request, EgressArgs::NAMES))?;
 
     Ok(FormatConfig {
         name: format.name(),
@@ -2909,6 +2928,11 @@ struct EgressArgs {
     /// streaming incremental updates. The view must be materialized.
     #[serde(default)]
     send_snapshot: bool,
+}
+
+impl EgressArgs {
+    /// Names of the query parameters that the `/egress` handler consumes.
+    const NAMES: &[&str] = &["backpressure", "format", "send_snapshot"];
 }
 
 #[post("/egress/{table_name}")]
@@ -4722,6 +4746,101 @@ mod test_http {
     use tempfile::TempDir;
     use tokio::time::timeout;
     use uuid::Uuid;
+
+    /// The `/ingress` handler must not pass its own query parameters to the
+    /// format.
+    #[cfg(feature = "with-avro")]
+    #[test]
+    fn test_ingress_query_excludes_handler_args() {
+        use super::{IngressArgs, format_query, parser_config_from_http_request};
+        use actix_web::test::TestRequest;
+
+        let request = TestRequest::with_uri(
+            "/ingress/t?format=avro&force=true&update_format=raw&skip_schema_id=true",
+        )
+        .to_http_request();
+        assert_eq!(
+            format_query(&request, IngressArgs::NAMES),
+            "update_format=raw&skip_schema_id=true"
+        );
+        parser_config_from_http_request("t", "avro", &request).unwrap();
+
+        let request =
+            TestRequest::with_uri("/ingress/t?format=avro&update_formt=raw").to_http_request();
+        let error = parser_config_from_http_request("t", "avro", &request).unwrap_err();
+        assert!(error.to_string().contains("update_formt"), "{error}");
+    }
+
+    /// Avro over `/ingress`: the schema travels in the query string, and each
+    /// request body is one datum (issue 7397).
+    #[cfg(feature = "with-avro")]
+    #[actix_web::test]
+    async fn test_http_ingress_avro() {
+        use apache_avro::{Schema as AvroSchema, to_avro_datum, types::Value as AvroValue};
+
+        ensure_default_crypto_provider();
+
+        let data = vec![vec![TestStruct::for_id(1), TestStruct::for_id(2)]];
+        let schema = AvroSchema::parse_str(TestStruct::avro_schema()).unwrap();
+        let query = form_urlencoded::Serializer::new(String::new())
+            .append_pair("format", "avro")
+            .append_pair("update_format", "raw")
+            .append_pair("skip_schema_id", "true")
+            .append_pair("schema", TestStruct::avro_schema())
+            .finish();
+
+        let server = start_test_server(
+            r#"
+name: test
+inputs:
+outputs:
+"#,
+            Uuid::new_v4(),
+        )
+        .await;
+        start_pipeline(&server).await;
+
+        for record in data.iter().flatten() {
+            let value = AvroValue::Record(vec![
+                ("id".to_string(), AvroValue::Long(record.id as i64)),
+                ("b".to_string(), AvroValue::Boolean(record.b)),
+                (
+                    "i".to_string(),
+                    match record.i {
+                        None => AvroValue::Union(0, Box::new(AvroValue::Null)),
+                        Some(i) => AvroValue::Union(1, Box::new(AvroValue::Long(i))),
+                    },
+                ),
+                ("s".to_string(), AvroValue::String(record.s.clone())),
+            ]);
+            let datum = to_avro_datum(&schema, value).unwrap();
+            let mut response = server
+                .post(format!("/ingress/test_input1?{query}"))
+                .send_body(datum)
+                .await
+                .unwrap();
+            let status = response.status();
+            let body = response.body().await.unwrap();
+            assert!(status.is_success(), "{}", String::from_utf8_lossy(&body));
+            let CompletionTokenResponse { token } = serde_json::from_slice(&body).unwrap();
+            wait_for_completion(&server, &token).await;
+        }
+
+        let mut response = server
+            .post("/egress/test_output1?format=csv&backpressure=true&send_snapshot=true")
+            .send()
+            .await
+            .unwrap();
+        assert!(response.status().is_success());
+        let (_chunks, mut records) = timeout(
+            Duration::from_secs(10),
+            collect_output_chunks(&mut response, 2),
+        )
+        .await
+        .unwrap();
+        records.sort();
+        assert_eq!(records, flatten_and_sort_batches(&data));
+    }
 
     /// Verifies the `send_snapshot` HTTP egress mode:
     /// 1. Pushes initial data, connects with `send_snapshot=true`, and
