@@ -165,14 +165,14 @@ impl CommonConfig {
         seekable_consumer_config.set("enable.partition.eof", "true");
         data_consumer_config.set("fetch.wait.max.ms", "1000");
 
+        // batch.size, batch.num.messages and linger.ms are left at librdkafka's defaults, so the
+        // producer batches under load: one message per request capped the sink at ~400 msg/s on MSK,
+        // and a transaction that cannot drain within transaction.timeout.ms fails.
         const PRODUCER_SETTINGS: &[(&str, &str)] = &[
             ("acks", "all"),
             ("enable.idempotence", "true"),
-            ("batch.size", "1"),
-            ("batch.num.messages", "1"),
             ("retries", "5"),
             ("socket.nagle.disable", "true"),
-            ("linger.ms", "0"),
         ];
         let mut producer_config = kafka_config(
             kafka_options,
